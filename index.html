@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pen Flick Strategy - Showdown</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #f4f1ea;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            pointer-events: none;
+            display: flex;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .player-card {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            border: 2px solid;
+            pointer-events: auto;
+        }
+        #p1-card { border-color: #e74c3c; }
+        #p2-card { border-color: #3498db; }
+        h2 { margin: 0 0 10px 0; font-size: 1.2rem; }
+        .stats { font-weight: bold; margin-bottom: 5px; }
+        .status { font-size: 0.9rem; color: #7f8c8d; min-height: 20px; }
+        .active-turn { box-shadow: 0 0 15px rgba(241, 196, 15, 0.8); }
+        
+        #message-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 30px 50px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+            pointer-events: auto;
+        }
+        #message-overlay button {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div id="p1-card" class="player-card active-turn">
+            <h2 style="color:#e74c3c;">Spieler 1</h2>
+            <div class="stats">Leben: <span id="p1-hp">20</span>/20</div>
+            <div class="stats">Mana: <span id="p1-mana">1</span></div>
+            <div class="status" id="p1-status"></div>
+        </div>
+        <div id="p2-card" class="player-card">
+            <h2 style="color:#3498db;">Spieler 2</h2>
+            <div class="stats">Leben: <span id="p2-hp">20</span>/20</div>
+            <div class="stats">Mana: <span id="p2-mana">1</span></div>
+            <div class="status" id="p2-status"></div>
+        </div>
+    </div>
+
+    <div id="message-overlay">
+        <h1 id="overlay-title">SHOWDOWN!</h1>
+        <p id="overlay-desc">Die Spieler sind nahe genug für den Nahkampf.</p>
+        <button onclick="resetGame()">Neues Spiel</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Spiel-Daten
+        let turn = 0; // 0 = P1, 1 = P2
+        let turnCount = 1;
+        
+        const players = [
+            { id: 0, x: 100, y: canvas.height / 2, hp: 20, maxMana: 1, mana: 1, color: '#e74c3c', inSwamp: false },
+            { id: 1, x: canvas.width - 100, y: canvas.height / 2, hp: 20, maxMana: 1, mana: 1, color: '#3498db', inSwamp: false }
+        ];
+
+        let mountains = [];
+        let swamps = [];
+        
+        // Interaktion
+        let isDragging = false;
+        let startPos = { x: 0, y: 0 };
+        let currentPos = { x: 0, y: 0 };
+        const maxFlickLength = 250;
+
+        // Helfer-Funktion: Generiere zufälliges Polygon
+        function generatePolygon(cx, cy, radius, numPoints) {
+            const points = [];
+            for (let i = 0; i < numPoints; i++) {
+                const angle = (i / numPoints) * Math.PI * 2;
+                const r = radius * (0.6 + Math.random() * 0.5); // Unregelmäßige Form
+                points.push({ x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r });
+            }
+            return points;
+        }
+
+        // Level-Generierung
+        function generateLevel() {
+            mountains = [];
+            swamps = [];
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            // 4-6 Berge generieren
+            const numMountains = 4 + Math.floor(Math.random() * 3);
+            for(let i=0; i<numMountains; i++) {
+                const x = centerX + (Math.random() - 0.5) * (canvas.width * 0.6);
+                const y = centerY + (Math.random() - 0.5) * (canvas.height * 0.8);
+                mountains.push(generatePolygon(x, y, 60 + Math.random() * 40, 6 + Math.floor(Math.random()*4)));
+            }
+
+            // 2-3 Sümpfe generieren
+            const numSwamps = 2 + Math.floor(Math.random() * 2);
+            for(let i=0; i<numSwamps; i++) {
+                const x = centerX + (Math.random() - 0.5) * (canvas.width * 0.6);
+                const y = centerY + (Math.random() - 0.5) * (canvas.height * 0.8);
+                swamps.push(generatePolygon(x, y, 80 + Math.random() * 50, 5 + Math.floor(Math.random()*3)));
+            }
+        }
+
+        // Zeichnen
+        function drawPolygon(points, color, isStroke = false) {
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i].x, points[i].y);
+            }
+            ctx.closePath();
+            if (isStroke) {
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            } else {
+                ctx.fillStyle = color;
+                ctx.fill();
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Sümpfe zeichnen
+            swamps.forEach(s => drawPolygon(s, 'rgba(46, 204, 113, 0.3)'));
+            // Berge zeichnen
+            mountains.forEach(m => {
+                drawPolygon(m, '#7f8c8d');
+                drawPolygon(m, '#2c3e50', true);
+            });
+
+            // Spieler zeichnen
+            players.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 15, 0, Math.PI * 2);
+                ctx.fillStyle = p.color;
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+
+            // Ziel-Linie zeichnen
+            if (isDragging) {
+                const activePlayer = players[turn];
+                const dx = currentPos.x - startPos.x;
+                const dy = currentPos.y - startPos.y;
+                let length = Math.hypot(dx, dy);
+                let aimX = activePlayer.x - dx;
+                let aimY = activePlayer.y - dy;
+
+                if (length > maxFlickLength) {
+                    const ratio = maxFlickLength / length;
+                    aimX = activePlayer.x - dx * ratio;
+                    aimY = activePlayer.y - dy * ratio;
+                }
+
+                ctx.beginPath();
+                ctx.moveTo(activePlayer.x, activePlayer.y);
+                ctx.lineTo(aimX, aimY);
+                ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+                ctx.setLineDash([5, 5]);
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // Endpunkt
+                ctx.beginPath();
+                ctx.arc(aimX, aimY, 5, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fill();
+            }
+        }
+
+        // Helfer: Linien-Kollision (Berge blockieren)
+        function lineIntersect(p0_x, p0_y, p1_x, p1_y, p2_x, p2_y, p3_x, p3_y) {
+            let s1_x, s1_y, s2_x, s2_y;
+            s1_x = p1_x - p0_x;     s1_y = p1_y - p0_y;
+            s2_x = p3_x - p2_x;     s2_y = p3_y - p2_y;
+
+            let s, t;
+            s = (-s1_y * (p0_x - p2_x) + s1_x * (p0_y - p2_y)) / (-s2_x * s1_y + s1_x * s2_y);
+            t = ( s2_x * (p0_y - p2_y) - s2_y * (p0_x - p2_x)) / (-s2_x * s1_y + s1_x * s2_y);
+
+            if (s >= 0 && s <= 1 && t >= 0 && t <= 1) {
+                return { x: p0_x + (t * s1_x), y: p0_y + (t * s1_y) };
+            }
+            return null;
+        }
+
+        function checkMountainCollision(startX, startY, endX, endY) {
+            let closestIntersect = null;
+            let minDist = Infinity;
+
+            mountains.forEach(poly => {
+                for (let i = 0; i < poly.length; i++) {
+                    const next = (i + 1) % poly.length;
+                    const intersect = lineIntersect(startX, startY, endX, endY, poly[i].x, poly[i].y, poly[next].x, poly[next].y);
+                    if (intersect) {
+                        const dist = Math.hypot(intersect.x - startX, intersect.y - startY);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            // Etwas vor der Wand stoppen
+                            const ratio = (dist - 10) / dist;
+                            closestIntersect = {
+                                x: startX + (endX - startX) * ratio,
+                                y: startY + (endY - startY) * ratio
+                            };
+                        }
+                    }
+                }
+            });
+            return closestIntersect;
+        }
+
+        // Helfer: Point in Polygon (Sumpf)
+        function pointInPolygon(point, vs) {
+            let x = point.x, y = point.y;
+            let inside = false;
+            for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+                let xi = vs[i].x, yi = vs[i].y;
+                let xj = vs[j].x, yj = vs[j].y;
+                let intersect = ((yi > y) != (yj > y))
+                    && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+                if (intersect) inside = !inside;
+            }
+            return inside;
+        }
+
+        // Spiel-Logik
+        function executeMove(aimX, aimY) {
+            const player = players[turn];
+            const manaCost = player.inSwamp ? 2 : 1;
+            
+            if (player.mana < manaCost) {
+                alert(`Nicht genug Mana! (Kostet ${manaCost})`);
+                return;
+            }
+
+            player.mana -= manaCost;
+
+            // Kollisionsprüfung Berge
+            const collision = checkMountainCollision(player.x, player.y, aimX, aimY);
+            if (collision) {
+                player.x = collision.x;
+                player.y = collision.y;
+            } else {
+                player.x = aimX;
+                player.y = aimY;
+            }
+
+            // Status Sumpf prüfen
+            player.inSwamp = swamps.some(s => pointInPolygon({x: player.x, y: player.y}, s));
+
+            // Showdown prüfen (Distanz)
+            const distToEnemy = Math.hypot(players[0].x - players[1].x, players[0].y - players[1].y);
+            if (distToEnemy < 60) {
+                triggerShowdown();
+                return;
+            }
+
+            updateUI();
+            
+            // Zugwechsel, wenn Mana leer
+            if (player.mana === 0) {
+                endTurn();
+            }
+            draw();
+        }
+
+        function endTurn() {
+            document.getElementById(`p${turn + 1}-card`).classList.remove('active-turn');
+            turn = turn === 0 ? 1 : 0;
+            document.getElementById(`p${turn + 1}-card`).classList.add('active-turn');
+
+            if (turn === 0) turnCount++;
+            
+            const nextPlayer = players[turn];
+            if (nextPlayer.maxMana < 10) nextPlayer.maxMana++;
+            nextPlayer.mana = nextPlayer.maxMana;
+            
+            updateUI();
+        }
+
+        function triggerShowdown() {
+            document.getElementById('message-overlay').style.display = 'block';
+            draw();
+        }
+
+        function resetGame() {
+            document.getElementById('message-overlay').style.display = 'none';
+            players[0].x = 100; players[0].y = canvas.height / 2;
+            players[1].x = canvas.width - 100; players[1].y = canvas.height / 2;
+            
+            players.forEach(p => {
+                p.hp = 20; p.maxMana = 1; p.mana = 1; p.inSwamp = false;
+            });
+            turn = 0; turnCount = 1;
+            generateLevel();
+            updateUI();
+            draw();
+            document.getElementById('p1-card').classList.add('active-turn');
+            document.getElementById('p2-card').classList.remove('active-turn');
+        }
+
+        function updateUI() {
+            players.forEach((p, i) => {
+                document.getElementById(`p${i+1}-hp`).innerText = p.hp;
+                document.getElementById(`p${i+1}-mana`).innerText = p.mana;
+                let statusText = p.inSwamp ? "IM SUMPF (Bewegung kostet 2 Mana)" : "";
+                if(p.mana === 0 && turn === i) statusText = "Zug beendet...";
+                document.getElementById(`p${i+1}-status`).innerText = statusText;
+            });
+        }
+
+        // Event Listeners (Maus/Touch)
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startPos = { x: e.clientX, y: e.clientY };
+            currentPos = { x: e.clientX, y: e.clientY };
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                currentPos = { x: e.clientX, y: e.clientY };
+                draw();
+            }
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (isDragging) {
+                isDragging = false;
+                const dx = currentPos.x - startPos.x;
+                const dy = currentPos.y - startPos.y;
+                // Nur ausführen wenn auch "gezogen" wurde
+                if (Math.hypot(dx, dy) > 10) {
+                    const activePlayer = players[turn];
+                    let length = Math.hypot(dx, dy);
+                    let aimX = activePlayer.x - dx;
+                    let aimY = activePlayer.y - dy;
+
+                    if (length > maxFlickLength) {
+                        const ratio = maxFlickLength / length;
+                        aimX = activePlayer.x - dx * ratio;
+                        aimY = activePlayer.y - dy * ratio;
+                    }
+                    executeMove(aimX, aimY);
+                }
+                draw();
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            draw();
+        });
+
+        // Init
+        generateLevel();
+        updateUI();
+        draw();
+    </script>
+</body>
+</html>
